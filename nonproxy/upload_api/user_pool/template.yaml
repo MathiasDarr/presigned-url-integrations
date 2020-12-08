@@ -1,0 +1,171 @@
+AWSTemplateFormatVersion : "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+
+
+Parameters:
+  SESEmailAddress:
+    Type: String
+    Default: arn:aws:ses:us-west-2:710339184759:identity/neuralstyleglacier@gmail.com
+
+  UserTableName:
+    Type: String
+    Default: Users
+
+  DynamoEndpoint:
+    Type: String
+    Default: cloud
+    AllowedValues:
+      - http://dynamo-local:8000
+      - cloud
+    Description: http://dynamo-local:8000, cloud
+
+Resources:
+  UserTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref UserTableName
+      AttributeDefinitions:
+        - AttributeName: "email"
+          AttributeType: "S"
+        - AttributeName: "upload_directory"
+          AttributeType: "S"
+
+      KeySchema:
+        - AttributeName: "email"
+          KeyType: "HASH"
+
+      GlobalSecondaryIndexes:
+        -
+          IndexName: "upload_directory_index"
+          KeySchema:
+            -
+              AttributeName: "upload_directory"
+              KeyType: "HASH"
+          Projection:
+            ProjectionType: "ALL"
+          ProvisionedThroughput:
+            ReadCapacityUnits: 1
+            WriteCapacityUnits: 1
+
+
+      ProvisionedThroughput:
+        ReadCapacityUnits: "1"
+        WriteCapacityUnits: "1"
+
+
+  SESRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "cognito-idp.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "CognitoSESPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "ses:SendEmail"
+                  - "ses:SendRawEmail"
+                Resource: "arn:aws:ses:us-west-2:710339184759:identity/neuralstyleglacier@gmail.com"
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+      UserPoolName: !Sub ${AWS::StackName}-UserPool
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      EmailConfiguration:
+        EmailSendingAccount: COGNITO_DEFAULT
+      LambdaConfig:
+        PostConfirmation: !GetAtt VerifyConfirmedUserFunction.Arn
+
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: my-app
+      GenerateSecret: false
+      UserPoolId: !Ref UserPool
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_CUSTOM_AUTH
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+#        - ADMIN_NO_SRP_AUTH
+
+  VerifyConfirmedUserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 10
+      FunctionName: VerifyConfirmedUserFunction
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserTableName
+      CodeUri: handlers/confirm_user
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          dynamo_endpoint: !Ref DynamoEndpoint
+          user_table: !Ref UserTableName
+      Runtime: python3.7
+
+
+  UserPoolLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - VerifyConfirmedUserFunction
+    Properties:
+      Action: lambda:invokeFunction
+      Principal: cognito-idp.amazonaws.com
+      FunctionName: VerifyConfirmedUserFunction
+      SourceArn: !GetAtt UserPool.Arn
+
+Outputs:
+  UserPool:
+    Value: !Ref UserPool
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'UserPool' ] ]
+
+  UserPoolClient:
+    Value: !Ref UserPoolClient
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'UserPoolClient' ] ]
+
+  UserPoolARN:
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'UserPoolARN' ] ]
+    Value:
+      Fn::GetAtt: UserPool.Arn
+
+  UserTableName:
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'UserTableName' ] ]
+    Value:
+      !Ref UserTableName
+
+  UserTable:
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'UserTableArn' ] ]
+    Value:
+      !GetAtt UserTable.Arn
+
+  UserTableIndicesArn:
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'UserTableIndicesArn' ] ]
+    Value:
+      !Join [ '', [ !GetAtt UserTable.Arn, '/index/*' ] ]
+
